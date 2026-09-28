@@ -1,0 +1,46 @@
+# macOS, editors, caches, and local environments
+.DS_Store
+.AppleDouble
+.LSOverride
+.venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.idea/
+.vscode/
+.env
+.env.*
+!.env.example
+
+# Freddie Mac source data and every rebuilt or exported data artifact stay local.
+data/raw/
+data/processed/
+data/**/*.txt
+data/**/*.zip
+outputs/
+work/
+exports/
+
+# Defense in depth for generated databases, exports, workbooks, and previews.
+*.duckdb
+*.duckdb.wal
+*.db
+*.csv
+*.xlsx
+*.xlsm
+*.inspect.ndjson
+*.png
+*.jpg
+*.jpeg
+
+# Public documentation diagrams without source-data values
+!docs/assets/project_workflow.png
+!docs/assets/dashboard_views.png
+
+# Local reports and recruiting materials
+*.docx
+*.pdf
