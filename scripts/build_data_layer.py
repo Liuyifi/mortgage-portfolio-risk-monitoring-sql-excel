@@ -16,7 +16,7 @@ SQL_FILES = (
     "10_staging.sql",
     "20_curated.sql",
     "30_marts.sql",
-    "90_quality_checks.sql",
+    "90_validation_checks.sql",
 )
 
 
@@ -74,16 +74,12 @@ def print_results(connection: duckdb.DuckDBPyConnection) -> None:
 
     summary = connection.execute(
         """
-        SELECT severity, count(*) AS checks,
-               count(*) FILTER (WHERE passed) AS passed
-        FROM quality.dq_test_results
-        GROUP BY severity
-        ORDER BY severity
+        SELECT count(*) AS checks, count(*) FILTER (WHERE passed) AS passed
+        FROM quality.validation_results
         """
-    ).fetchall()
+    ).fetchone()
     print("\nValidation summary")
-    for severity, check_count, passed_count in summary:
-        print(f"- {severity}: {passed_count}/{check_count} passed")
+    print(f"- {summary[1]}/{summary[0]} checks passed")
 
 
 def main() -> int:
@@ -101,10 +97,10 @@ def main() -> int:
         run_sql_steps(connection, raw_dir)
         failures = connection.execute(
             """
-            SELECT test_name, failed_row_count, details
-            FROM quality.dq_test_results
-            WHERE severity = 'ERROR' AND NOT passed
-            ORDER BY test_name
+            SELECT check_name, failed_row_count, details
+            FROM quality.validation_results
+            WHERE NOT passed
+            ORDER BY check_name
             """
         ).fetchall()
         if failures:

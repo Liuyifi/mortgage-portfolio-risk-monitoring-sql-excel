@@ -1,7 +1,7 @@
 -- Field order is locked to Freddie Mac SFLLD Release 47 (July 2026).
 -- The external views read all fields as VARCHAR so DuckDB cannot infer a
 -- different schema. Typed staging keeps raw status/sentinel fields needed for
--- audit and normalizes only field-specific missing-value codes.
+-- analysis and normalizes only field-specific missing-value codes.
 
 CREATE VIEW raw_external.v_origination AS
 SELECT
