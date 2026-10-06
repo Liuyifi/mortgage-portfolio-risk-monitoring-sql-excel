@@ -1,4 +1,4 @@
--- Local dashboard display extracts built only from validated marts.
+-- Local aggregate extracts used by the Excel dashboard.
 -- This file creates TEMP tables: it never changes the persisted DuckDB database.
 -- {{MIN_CELL_COUNT}} is replaced by scripts/export_dashboard_data.py.
 
@@ -119,7 +119,7 @@ FROM rated
 ORDER BY as_of_month, segment_name, segment_sort_order, segment_value;
 
 -- Only the all-portfolio transition scope is exported. Vintage transition cuts
--- are intentionally omitted because month x vintage x state paths produce many
+-- are omitted because month x vintage x state paths produce many
 -- very small cells. Entire from-state cohorts below the threshold are suppressed;
 -- rare destinations inside retained cohorts are rolled into one safe bucket.
 CREATE OR REPLACE TEMP TABLE dashboard_delinquency_transition_monthly AS

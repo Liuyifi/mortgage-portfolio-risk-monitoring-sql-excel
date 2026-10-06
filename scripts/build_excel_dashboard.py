@@ -357,13 +357,6 @@ def read_validation_samples(database: Path) -> list[dict[str, Any]]:
 
 def refresh_dashboard_exports(database: Path) -> Path:
     export_dir = PROJECT_ROOT / "data" / "processed" / "dashboard"
-    export_summary = (
-        PROJECT_ROOT
-        / "data"
-        / "processed"
-        / "validation"
-        / "dashboard_export_summary.json"
-    )
     subprocess.run(
         [
             sys.executable,
@@ -372,8 +365,6 @@ def refresh_dashboard_exports(database: Path) -> Path:
             str(database),
             "--output-dir",
             str(export_dir),
-            "--summary",
-            str(export_summary),
         ],
         cwd=PROJECT_ROOT,
         check=True,
