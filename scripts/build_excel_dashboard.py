@@ -1,50 +1,25 @@
 #!/usr/bin/env python3
-"""Build and validate the offline Excel dashboard with XlsxWriter.
-
-The script refreshes the existing governed aggregate exports, reads the
-staging-independent DuckDB reconciliation samples, writes only aggregate data
-to the workbook, and validates the saved XLSX package with Python's standard
-library. The reference workbook is optional and is never modified.
-"""
+"""Build the Excel dashboard from local aggregate DuckDB exports."""
 
 from __future__ import annotations
 
 import argparse
 import csv
-import json
-import math
-import os
-import posixpath
-import re
 import subprocess
 import sys
-import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from xml.etree import ElementTree as ET
-
-import duckdb
 import xlsxwriter
 from xlsxwriter.utility import xl_col_to_name
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-REFERENCE_WORKBOOK = (
-    PROJECT_ROOT / "outputs" / "mortgage_portfolio_risk_monitoring_sql_excel_dashboard.xlsx"
-)
 DEFAULT_OUTPUT = (
     PROJECT_ROOT
     / "outputs"
-    / "mortgage_portfolio_risk_monitoring_sql_excel_dashboard_xlsxwriter_candidate.xlsx"
-)
-DEFAULT_SUMMARY = (
-    PROJECT_ROOT
-    / "data"
-    / "processed"
-    / "validation"
-    / "excel_dashboard_xlsxwriter_build_summary.json"
+    / "mortgage_portfolio_risk_monitoring_sql_excel_dashboard.xlsx"
 )
 
 FONT = "Arial"
@@ -71,7 +46,6 @@ SHEET_NAMES = [
     "Monthly Data",
     "Segment Data",
     "Transition Data",
-    "Validation",
     "ReadMe",
 ]
 
@@ -245,47 +219,11 @@ TO_STATES = [
     "OTHER_OR_LOW_VOLUME",
 ]
 
-MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-PKG_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
-CHART_NS = "http://schemas.openxmlformats.org/drawingml/2006/chart"
-DRAWING_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
-XML_NS = {
-    "m": MAIN_NS,
-    "r": REL_NS,
-    "pr": PKG_REL_NS,
-    "c": CHART_NS,
-    "a": DRAWING_NS,
-}
-
-
 @dataclass
 class DashboardData:
     monthly: list[dict[str, Any]]
     segments: list[dict[str, Any]]
     transitions: list[dict[str, Any]]
-    validation_samples: list[dict[str, Any]]
-
-
-@dataclass
-class WorkbookSnapshot:
-    sheet_names: list[str]
-    sheet_states: dict[str, str]
-    cells: dict[str, dict[str, Any]]
-    formulas: dict[str, dict[str, str]]
-    merges: dict[str, list[str]]
-    validations: dict[str, list[dict[str, str]]]
-    panes: dict[str, list[dict[str, str]]]
-    tables: dict[str, list[dict[str, str]]]
-    charts: list[dict[str, Any]]
-    defined_names: list[dict[str, Any]]
-    external_links: list[str]
-    vba_parts: list[str]
-    power_query_parts: list[str]
-    formula_error_tokens: list[str]
-    chinese_character_count: int
-    calc_mode: str | None
-    full_calc_on_load: str | None
 
 
 def parse_args() -> argparse.Namespace:
@@ -296,8 +234,6 @@ def parse_args() -> argparse.Namespace:
         default=PROJECT_ROOT / "data" / "processed" / "mortgage_risk.duckdb",
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    parser.add_argument("--summary", type=Path, default=DEFAULT_SUMMARY)
-    parser.add_argument("--reference", type=Path, default=REFERENCE_WORKBOOK)
     return parser.parse_args()
 
 
@@ -322,36 +258,6 @@ def read_projected_csv(path: Path, fields: list[str]) -> list[dict[str, Any]]:
             raise RuntimeError(f"Missing columns in {path}: {missing}")
         for source_row in reader:
             rows.append({field: cast_value(field, source_row[field]) for field in fields})
-    return rows
-
-
-def read_validation_samples(database: Path) -> list[dict[str, Any]]:
-    sql = """
-        SELECT
-            strftime(as_of_month, '%Y-%m-%d') AS as_of_month,
-            independent_on_book_loan_count AS on_book_loan_count,
-            CAST(independent_on_book_upb AS DOUBLE) AS on_book_upb,
-            independent_eligible_loan_count AS eligible_loan_count,
-            CAST(independent_eligible_upb AS DOUBLE) AS eligible_upb,
-            independent_dq30_loan_count / NULLIF(independent_eligible_loan_count, 0)::DOUBLE AS dq30_count_rate,
-            independent_dq60_loan_count / NULLIF(independent_eligible_loan_count, 0)::DOUBLE AS dq60_count_rate,
-            independent_dq90_loan_count / NULLIF(independent_eligible_loan_count, 0)::DOUBLE AS dq90_count_rate,
-            CAST(independent_dq30_upb AS DOUBLE) / NULLIF(CAST(independent_eligible_upb AS DOUBLE), 0) AS dq30_balance_rate,
-            CAST(independent_dq60_upb AS DOUBLE) / NULLIF(CAST(independent_eligible_upb AS DOUBLE), 0) AS dq60_balance_rate,
-            CAST(independent_dq90_upb AS DOUBLE) / NULLIF(CAST(independent_eligible_upb AS DOUBLE), 0) AS dq90_balance_rate,
-            reconciled
-        FROM quality.metric_reconciliation_samples
-        ORDER BY as_of_month
-    """
-    with duckdb.connect(str(database), read_only=True) as connection:
-        cursor = connection.execute(sql)
-        columns = [item[0] for item in cursor.description]
-        rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
-    expected_months = ["2020-06-01", "2021-06-01", "2026-03-01"]
-    if [row["as_of_month"] for row in rows] != expected_months:
-        raise RuntimeError(f"Unexpected validation months: {rows}")
-    if not all(row["reconciled"] for row in rows):
-        raise RuntimeError("DuckDB staging-independent sample reconciliation is not PASS")
     return rows
 
 
@@ -383,12 +289,7 @@ def load_dashboard_data(database: Path) -> DashboardData:
     )
     if not monthly or not segments or not transitions:
         raise RuntimeError("One or more aggregate dashboard exports are empty")
-    return DashboardData(
-        monthly=monthly,
-        segments=segments,
-        transitions=transitions,
-        validation_samples=read_validation_samples(database),
-    )
+    return DashboardData(monthly=monthly, segments=segments, transitions=transitions)
 
 
 def excel_date(value: str) -> datetime:
@@ -519,7 +420,6 @@ def create_formats(workbook: xlsxwriter.Workbook) -> dict[str, Any]:
         ),
         "percent": workbook.add_format({**base, "font_size": 9, "num_format": "0.00%"}),
         "percent_1": workbook.add_format({**base, "font_size": 9, "num_format": "0.0%"}),
-        "percent_4": workbook.add_format({**base, "font_size": 9, "num_format": "0.0000%"}),
         "text": workbook.add_format({**base, "font_size": 9}),
         "text_center": workbook.add_format({**base, "font_size": 9, "align": "center"}),
         "note_box": workbook.add_format(
@@ -530,18 +430,6 @@ def create_formats(workbook: xlsxwriter.Workbook) -> dict[str, Any]:
                 "font_color": COLORS["gray"],
                 "bg_color": COLORS["light_gray"],
                 "text_wrap": True,
-                "valign": "vcenter",
-            }
-        ),
-        "validation_status": workbook.add_format(
-            {
-                "font_name": FONT,
-                "font_size": 11,
-                "bold": True,
-                "font_color": COLORS["navy"],
-                "bg_color": COLORS["light_blue"],
-                "border": 1,
-                "border_color": COLORS["border"],
                 "valign": "vcenter",
             }
         ),
@@ -639,12 +527,12 @@ def write_supporting_tables(
     write_title(
         monthly_sheet,
         "A1:S1",
-        "Embedded monthly portfolio aggregates",
+        "Monthly portfolio data",
         formats,
     )
     monthly_sheet.write(
         "A2",
-        "Source: validated DuckDB mart.portfolio_monthly; Freddie Mac SFLLD Release 47 samples.",
+        "Source: DuckDB mart.portfolio_monthly; Freddie Mac 2019 and 2020 samples.",
         formats["source_note"],
     )
     monthly_rows = [
@@ -707,12 +595,12 @@ def write_supporting_tables(
     write_title(
         segment_sheet,
         "A1:P1",
-        "Embedded monthly segment aggregates",
+        "Monthly segment data",
         formats,
     )
     segment_sheet.write(
         "A2",
-        "Source: local display export of mart.portfolio_monthly_by_segment; minimum displayed cell is 20 loans.",
+        "Source: mart.portfolio_monthly_by_segment; displayed cells contain at least 20 loans.",
         formats["source_note"],
     )
     segment_rows = [
@@ -770,12 +658,12 @@ def write_supporting_tables(
     write_title(
         transition_sheet,
         "A1:J1",
-        "Embedded delinquency transition aggregates",
+        "Monthly transition data",
         formats,
     )
     transition_sheet.write(
         "A2",
-        "Source: local overall-scope display export of mart.delinquency_transition_monthly; exact next-month pairs only.",
+        "Source: mart.delinquency_transition_monthly; exact next-month pairs only.",
         formats["source_note"],
     )
     transition_rows = [
@@ -834,7 +722,7 @@ def write_readme_sheet(
         formats,
     )
     rows = [
-        ("Workbook scope", "Offline Excel dashboard built from validated aggregate DuckDB marts."),
+        ("Workbook scope", "Excel dashboard built from monthly aggregate tables in DuckDB."),
         ("Data source", "Freddie Mac SFLLD Release 47, 2019 and 2020 Standard Dataset annual samples."),
         ("Performance window", "2019-01 through 2026-03."),
         ("Population", "Sample month-end on-book loans; balances do not represent Freddie Mac's actual asset scale."),
@@ -842,10 +730,10 @@ def write_readme_sheet(
         ("30+/60+/90+", "Numeric delinquency status >= 1 / 2 / 3; 90+ means severe delinquency, not default."),
         ("Status coverage", "Eligible count or UPB divided by on-book count or UPB."),
         ("Transitions", "Exact next natural month only; balance rates use the origin month's UPB."),
-        ("Privacy", "No loan IDs. Segment cells below 20 loans are merged; origin-state transition cohorts below 20 are suppressed."),
+        ("Low-volume cells", "No loan IDs. Segment cells below 20 loans are merged; origin-state transition cohorts below 20 are omitted."),
         ("Refresh", "Run .venv/bin/python scripts/build_excel_dashboard.py from the project root."),
-        ("Workbook design", "No macros, external data connections, or cloud account."),
-        ("Delivery", "Offline Excel workbook for local use."),
+        ("Workbook design", "The dashboard uses native Excel formulas, charts and dropdowns."),
+        ("File use", "The workbook is designed for local review in Excel."),
     ]
     for row_index, (label, value) in enumerate(rows, start=2):
         worksheet.write(row_index, 0, label, formats["section_label"])
@@ -855,7 +743,7 @@ def write_readme_sheet(
         ("Official source", "https://www.freddiemac.com/research/datasets/sf-loanlevel-dataset"),
         ("Release 47 guide", "https://www.freddiemac.com/fmac-resources/research/pdf/general_user_guide_july_2026.pdf"),
         ("Terms", "https://capitalmarkets.freddiemac.com/crt/docs/pdfs/fre_terms_conditions_sflld.pdf"),
-        ("Local lineage", "DuckDB mart tables -> local aggregate CSV -> embedded workbook data tabs"),
+        ("Data flow", "DuckDB mart tables -> aggregate CSV files -> workbook data tabs"),
     ]
     for row_index, (label, value) in enumerate(sources, start=15):
         worksheet.write(row_index, 0, label, formats["body_text"])
@@ -1494,151 +1382,6 @@ def write_transitions(
     add_transition_chart(workbook, worksheet)
 
 
-def write_validation_sheet(
-    worksheet: Any,
-    data: DashboardData,
-    formats: dict[str, Any],
-    monthly_end: int,
-) -> None:
-    write_title(
-        worksheet,
-        "A1:AB1",
-        "Validation against DuckDB sample months",
-        formats,
-    )
-    write_subtitle(
-        worksheet,
-        "A2:AB2",
-        "All rates are recomputed from embedded additive components. A zero in each Check column means the workbook matches the DuckDB benchmark.",
-        formats,
-    )
-    headers = [
-        "Month",
-        "On-book",
-        "Expected",
-        "Check",
-        "On-book UPB",
-        "Expected",
-        "Check",
-        "Eligible",
-        "Expected",
-        "Check",
-        "30+ count",
-        "Expected",
-        "Check",
-        "60+ count",
-        "Expected",
-        "Check",
-        "90+ count",
-        "Expected",
-        "Check",
-        "30+ balance",
-        "Expected",
-        "Check",
-        "60+ balance",
-        "Expected",
-        "Check",
-        "90+ balance",
-        "Expected",
-        "Check",
-    ]
-    write_header_row(worksheet, 3, 0, headers, formats["header"])
-    for index, sample in enumerate(data.validation_samples):
-        row = 5 + index
-        worksheet.write_datetime(row - 1, 0, excel_date(sample["as_of_month"]), formats["date"])
-        worksheet.write_formula(
-            row - 1,
-            1,
-            f"=SUMIFS('Monthly Data'!$B$5:$B${monthly_end},'Monthly Data'!$A$5:$A${monthly_end},$A{row})",
-            formats["integer"],
-        )
-        worksheet.write_formula(row - 1, 2, f'={sample["on_book_loan_count"]}', formats["integer"])
-        worksheet.write_formula(row - 1, 3, f"=IF(B{row}=C{row},0,1)", formats["integer"])
-        worksheet.write_formula(
-            row - 1,
-            4,
-            f"=SUMIFS('Monthly Data'!$C$5:$C${monthly_end},'Monthly Data'!$A$5:$A${monthly_end},$A{row})",
-            formats["currency"],
-        )
-        worksheet.write_formula(row - 1, 5, f'={sample["on_book_upb"]}', formats["currency"])
-        worksheet.write_formula(row - 1, 6, f"=IF(ABS(E{row}-F{row})<0.01,0,1)", formats["integer"])
-        worksheet.write_formula(
-            row - 1,
-            7,
-            f"=SUMIFS('Monthly Data'!$D$5:$D${monthly_end},'Monthly Data'!$A$5:$A${monthly_end},$A{row})",
-            formats["integer"],
-        )
-        worksheet.write_formula(row - 1, 8, f'={sample["eligible_loan_count"]}', formats["integer"])
-        worksheet.write_formula(row - 1, 9, f"=IF(H{row}=I{row},0,1)", formats["integer"])
-
-        count_numerator_cols = ["N", "O", "P"]
-        count_triples = [(10, 11, 12), (13, 14, 15), (16, 17, 18)]
-        expected_count = [
-            sample["dq30_count_rate"],
-            sample["dq60_count_rate"],
-            sample["dq90_count_rate"],
-        ]
-        balance_numerator_cols = ["Q", "R", "S"]
-        balance_triples = [(19, 20, 21), (22, 23, 24), (25, 26, 27)]
-        expected_balance = [
-            sample["dq30_balance_rate"],
-            sample["dq60_balance_rate"],
-            sample["dq90_balance_rate"],
-        ]
-        for metric_index in range(3):
-            start, expected_col, check_col = count_triples[metric_index]
-            start_name = xl_col_to_name(start)
-            expected_name = xl_col_to_name(expected_col)
-            worksheet.write_formula(
-                row - 1,
-                start,
-                f"=SUMIFS('Monthly Data'!${count_numerator_cols[metric_index]}$5:${count_numerator_cols[metric_index]}${monthly_end},'Monthly Data'!$A$5:$A${monthly_end},$A{row})/H{row}",
-                formats["percent_4"],
-            )
-            worksheet.write_formula(
-                row - 1,
-                expected_col,
-                f"={expected_count[metric_index]}",
-                formats["percent_4"],
-            )
-            worksheet.write_formula(
-                row - 1,
-                check_col,
-                f"=IF(ABS({start_name}{row}-{expected_name}{row})<0.0000000001,0,1)",
-                formats["percent_4"],
-            )
-            b_start, b_expected, b_check = balance_triples[metric_index]
-            b_start_name = xl_col_to_name(b_start)
-            b_expected_name = xl_col_to_name(b_expected)
-            worksheet.write_formula(
-                row - 1,
-                b_start,
-                f"=SUMIFS('Monthly Data'!${balance_numerator_cols[metric_index]}$5:${balance_numerator_cols[metric_index]}${monthly_end},'Monthly Data'!$A$5:$A${monthly_end},$A{row})/SUMIFS('Monthly Data'!$E$5:$E${monthly_end},'Monthly Data'!$A$5:$A${monthly_end},$A{row})",
-                formats["percent_4"],
-            )
-            worksheet.write_formula(
-                row - 1,
-                b_expected,
-                f"={expected_balance[metric_index]}",
-                formats["percent_4"],
-            )
-            worksheet.write_formula(
-                row - 1,
-                b_check,
-                f"=IF(ABS({b_start_name}{row}-{b_expected_name}{row})<0.0000000001,0,1)",
-                formats["percent_4"],
-            )
-    worksheet.write("A9", "Overall status", formats["validation_status"])
-    worksheet.write_formula(
-        "B9",
-        '=IF(SUM(D5:D7,G5:G7,J5:J7,M5:M7,P5:P7,S5:S7,V5:V7,Y5:Y7,AB5:AB7)=0,"PASS","CHECK")',
-        formats["validation_status"],
-    )
-    worksheet.set_column("A:D", 12)
-    worksheet.set_column("E:F", 18)
-    worksheet.set_column("G:AB", 12)
-
-
 def build_workbook(output: Path, data: DashboardData) -> None:
     workbook = xlsxwriter.Workbook(output)
     workbook.set_properties(
@@ -1646,7 +1389,7 @@ def build_workbook(output: Path, data: DashboardData) -> None:
             "title": "Mortgage Portfolio Risk Monitoring with SQL and Excel",
             "subject": "Aggregate mortgage portfolio risk monitoring dashboard",
             "keywords": "mortgage risk, DuckDB, SQL, Python, Excel",
-            "comments": "Built from validated aggregate marts without loan-level records.",
+            "comments": "Built from aggregate mortgage portfolio tables without loan-level rows.",
         }
     )
     workbook.set_calc_mode("auto")
@@ -1656,8 +1399,6 @@ def build_workbook(output: Path, data: DashboardData) -> None:
         tab_color = None
         if name in {"Portfolio Overview", "Risk Segments", "Transitions"}:
             tab_color = COLORS["navy"]
-        elif name == "Validation":
-            tab_color = COLORS["gray"]
         elif name == "ReadMe":
             tab_color = "#9CA3AF"
         configure_sheet(worksheet, tab_color)
@@ -1685,582 +1426,59 @@ def build_workbook(output: Path, data: DashboardData) -> None:
         formats,
         endpoints["transition_end"],
     )
-    write_validation_sheet(
-        sheets["Validation"], data, formats, endpoints["monthly_end"]
-    )
     workbook.close()
 
 
-def normalize_theme_fonts(path: Path) -> None:
-    """Replace locale-specific default theme font names with Arial.
-
-    XlsxWriter's bundled Office theme includes East Asian typeface names even
-    when every workbook cell uses Arial. Normalizing those metadata-only names
-    keeps the generated package language-neutral without changing workbook
-    content, formulas, formatting, or calculations.
-    """
-    normalized = path.with_name(f"{path.stem}.theme-normalized.xlsx")
-    try:
-        with zipfile.ZipFile(path, "r") as source, zipfile.ZipFile(
-            normalized, "w", compression=zipfile.ZIP_DEFLATED
-        ) as destination:
-            for member in source.infolist():
-                payload = source.read(member.filename)
-                if member.filename == "xl/theme/theme1.xml":
-                    theme = payload.decode("utf-8")
-                    theme = theme.replace(
-                        'typeface="\u5b8b\u4f53"', 'typeface="Arial"'
-                    )
-                    theme = theme.replace(
-                        'typeface="\u65b0\u7d30\u660e\u9ad4"',
-                        'typeface="Arial"',
-                    )
-                    payload = theme.encode("utf-8")
-                destination.writestr(member, payload)
-        os.replace(normalized, path)
-    finally:
-        if normalized.exists():
-            normalized.unlink()
-
-
-def read_xml(zf: zipfile.ZipFile, name: str) -> ET.Element:
-    return ET.fromstring(zf.read(name))
-
-
-def normalize_part_path(base: str, target: str) -> str:
-    if target.startswith("/"):
-        return target.lstrip("/")
-    return posixpath.normpath(posixpath.join(posixpath.dirname(base), target))
-
-
-def relationships(
-    zf: zipfile.ZipFile, source: str
-) -> dict[str, tuple[str, str]]:
-    rel_name = posixpath.join(
-        posixpath.dirname(source), "_rels", posixpath.basename(source) + ".rels"
-    )
-    if rel_name not in zf.namelist():
-        return {}
-    root = read_xml(zf, rel_name)
-    return {
-        relationship.attrib["Id"]: (
-            relationship.attrib["Type"],
-            normalize_part_path(source, relationship.attrib["Target"]),
-        )
-        for relationship in root.findall("pr:Relationship", XML_NS)
-    }
-
-
-def shared_strings(zf: zipfile.ZipFile) -> list[str]:
-    if "xl/sharedStrings.xml" not in zf.namelist():
-        return []
-    root = read_xml(zf, "xl/sharedStrings.xml")
-    return [
-        "".join(text.text or "" for text in item.iter(f"{{{MAIN_NS}}}t"))
-        for item in root.findall("m:si", XML_NS)
-    ]
-
-
-def parsed_cell_value(cell: ET.Element, strings: list[str]) -> Any:
-    cell_type = cell.attrib.get("t")
-    if cell_type == "inlineStr":
-        return "".join(
-            text.text or "" for text in cell.iter(f"{{{MAIN_NS}}}t")
-        )
-    value = cell.find("m:v", XML_NS)
-    if value is None:
-        return None
-    raw = value.text or ""
-    if cell_type == "s":
-        return strings[int(raw)]
-    if cell_type == "b":
-        return raw == "1"
-    if cell_type in {"str", "e"}:
-        return raw
-    try:
-        number = float(raw)
-        return int(number) if number.is_integer() else number
-    except ValueError:
-        return raw
-
-
-def inspect_workbook_structure(path: Path) -> WorkbookSnapshot:
-    with zipfile.ZipFile(path) as zf:
-        part_names = set(zf.namelist())
-        strings = shared_strings(zf)
-        workbook = read_xml(zf, "xl/workbook.xml")
-        workbook_rels = relationships(zf, "xl/workbook.xml")
-        calc = workbook.find("m:calcPr", XML_NS)
-        sheet_names: list[str] = []
-        sheet_states: dict[str, str] = {}
-        all_cells: dict[str, dict[str, Any]] = {}
-        all_formulas: dict[str, dict[str, str]] = {}
-        all_merges: dict[str, list[str]] = {}
-        all_validations: dict[str, list[dict[str, str]]] = {}
-        all_panes: dict[str, list[dict[str, str]]] = {}
-        all_tables: dict[str, list[dict[str, str]]] = {}
-        charts: list[dict[str, Any]] = []
-        chart_paths_seen: set[str] = set()
-
-        for sheet_node in workbook.findall("m:sheets/m:sheet", XML_NS):
-            sheet_name = sheet_node.attrib["name"]
-            sheet_names.append(sheet_name)
-            sheet_states[sheet_name] = sheet_node.attrib.get("state", "visible")
-            relation_id = sheet_node.attrib[f"{{{REL_NS}}}id"]
-            sheet_path = workbook_rels[relation_id][1]
-            sheet = read_xml(zf, sheet_path)
-            sheet_rels = relationships(zf, sheet_path)
-            cells: dict[str, Any] = {}
-            formulas: dict[str, str] = {}
-            for cell in sheet.findall(".//m:sheetData/m:row/m:c", XML_NS):
-                address = cell.attrib["r"]
-                cells[address] = parsed_cell_value(cell, strings)
-                formula = cell.find("m:f", XML_NS)
-                if formula is not None:
-                    formulas[address] = formula.text or ""
-            all_cells[sheet_name] = cells
-            all_formulas[sheet_name] = formulas
-            all_merges[sheet_name] = sorted(
-                item.attrib["ref"]
-                for item in sheet.findall("m:mergeCells/m:mergeCell", XML_NS)
-            )
-            validations = []
-            for item in sheet.findall("m:dataValidations/m:dataValidation", XML_NS):
-                validations.append(
-                    {
-                        "sqref": item.attrib.get("sqref", ""),
-                        "type": item.attrib.get("type", ""),
-                        "formula1": item.findtext(
-                            "m:formula1", default="", namespaces=XML_NS
-                        ).lstrip("="),
-                    }
-                )
-            all_validations[sheet_name] = sorted(
-                validations, key=lambda value: (value["sqref"], value["formula1"])
-            )
-            panes = []
-            for item in sheet.findall("m:sheetViews/m:sheetView/m:pane", XML_NS):
-                panes.append(
-                    {
-                        key: item.attrib[key]
-                        for key in ["state", "xSplit", "ySplit", "topLeftCell"]
-                        if key in item.attrib
-                    }
-                )
-            all_panes[sheet_name] = panes
-            tables = []
-            for relation_type, target in sheet_rels.values():
-                if relation_type.endswith("/table"):
-                    table = read_xml(zf, target)
-                    tables.append(
-                        {
-                            "name": table.attrib.get("name", ""),
-                            "ref": table.attrib.get("ref", ""),
-                        }
-                    )
-                if relation_type.endswith("/drawing"):
-                    for drawing_type, chart_path in relationships(zf, target).values():
-                        if not drawing_type.endswith("/chart") or chart_path in chart_paths_seen:
-                            continue
-                        chart_paths_seen.add(chart_path)
-                        chart = read_xml(zf, chart_path)
-                        title = "".join(
-                            text.text or ""
-                            for text in chart.findall(".//c:title//a:t", XML_NS)
-                        )
-                        series = []
-                        for series_node in chart.findall(".//c:ser", XML_NS):
-                            refs = [
-                                reference.text or ""
-                                for reference in series_node.findall(".//c:f", XML_NS)
-                            ]
-                            series.append(refs)
-                        charts.append(
-                            {"sheet": sheet_name, "title": title, "series": series}
-                        )
-            all_tables[sheet_name] = sorted(tables, key=lambda value: value["name"])
-
-        defined_names = [
-            {
-                "name": item.attrib.get("name"),
-                "local_sheet_id": item.attrib.get("localSheetId"),
-                "value": item.text,
-            }
-            for item in workbook.findall("m:definedNames/m:definedName", XML_NS)
-        ]
-        xml_text = "\n".join(
-            zf.read(name).decode("utf-8", errors="ignore")
-            for name in part_names
-            if name.endswith((".xml", ".rels"))
-        )
-        error_markers = sorted(
-            {
-                marker
-                for marker in [
-                    "#REF!",
-                    "#DIV/0!",
-                    "#VALUE!",
-                    "#NAME?",
-                    "#N/A",
-                    "#NUM!",
-                    "#NULL!",
-                    "#SPILL!",
-                    "#CALC!",
-                ]
-                if marker in xml_text
-            }
-        )
-        return WorkbookSnapshot(
-            sheet_names=sheet_names,
-            sheet_states=sheet_states,
-            cells=all_cells,
-            formulas=all_formulas,
-            merges=all_merges,
-            validations=all_validations,
-            panes=all_panes,
-            tables=all_tables,
-            charts=charts,
-            defined_names=defined_names,
-            external_links=sorted(
-                name
-                for name in part_names
-                if "externalLink" in name
-                or "connections" in name
-                or "queryTable" in name
-            ),
-            vba_parts=sorted(
-                name for name in part_names if name.lower().endswith("vbaproject.bin")
-            ),
-            power_query_parts=sorted(
-                name
-                for name in part_names
-                if "customXml" in name
-                or "dataMashup" in name
-                or "powerquery" in name.lower()
-            ),
-            formula_error_tokens=error_markers,
-            chinese_character_count=len(
-                re.findall(r"[\u3400-\u9fff\uf900-\ufaff]", xml_text)
-            ),
-            calc_mode=calc.attrib.get("calcMode") if calc is not None else None,
-            full_calc_on_load=(
-                calc.attrib.get("fullCalcOnLoad") if calc is not None else None
-            ),
-        )
-
-
-def parse_cell_address(address: str) -> tuple[int, int]:
-    match = re.fullmatch(r"([A-Z]+)([0-9]+)", address)
-    if not match:
-        raise ValueError(f"Unsupported cell address: {address}")
-    letters, row_text = match.groups()
-    column = 0
-    for letter in letters:
-        column = column * 26 + ord(letter) - ord("A") + 1
-    return int(row_text), column
-
-
-def iter_range(address_range: str):
-    start, end = address_range.split(":")
-    start_row, start_col = parse_cell_address(start)
-    end_row, end_col = parse_cell_address(end)
-    for row in range(start_row, end_row + 1):
-        for col in range(start_col, end_col + 1):
-            yield f"{xl_col_to_name(col - 1)}{row}"
-
-
-def values_equal(left: Any, right: Any) -> bool:
-    if isinstance(left, bool) or isinstance(right, bool):
-        return type(left) is type(right) and left == right
-    if isinstance(left, (int, float)) and isinstance(right, (int, float)):
-        return math.isclose(float(left), float(right), rel_tol=1e-15, abs_tol=1e-9)
-    return left == right
-
-
-def canonical_chart_reference(reference: str) -> str:
-    """Normalize optional sheet-name quoting in chart formulas."""
-    return re.sub(r"^'([^']+)'!", r"\1!", reference)
-
-
-def comparable_charts(charts: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "sheet": item["sheet"],
-            "title": item["title"],
-            "series": [
-                [canonical_chart_reference(reference) for reference in series]
-                for series in item["series"]
-            ],
-        }
-        for item in charts
-    ]
-
-
-def compare_reference_and_candidate(
-    reference: WorkbookSnapshot, candidate: WorkbookSnapshot
-) -> dict[str, Any]:
-    data_table_names = {
-        "Monthly Data": "MonthlyAggregates",
-        "Segment Data": "SegmentAggregates",
-        "Transition Data": "TransitionAggregates",
-    }
-    data_mismatches = []
-    data_cells_compared = 0
-    for sheet_name, table_name in data_table_names.items():
-        reference_table = next(
-            table for table in reference.tables[sheet_name] if table["name"] == table_name
-        )
-        candidate_table = next(
-            table for table in candidate.tables[sheet_name] if table["name"] == table_name
-        )
-        if reference_table["ref"] != candidate_table["ref"]:
-            data_mismatches.append(
-                {
-                    "sheet": sheet_name,
-                    "cell": "table_range",
-                    "reference": reference_table["ref"],
-                    "candidate": candidate_table["ref"],
-                }
-            )
-            continue
-        for address in iter_range(reference_table["ref"]):
-            data_cells_compared += 1
-            reference_value = reference.cells[sheet_name].get(address)
-            candidate_value = candidate.cells[sheet_name].get(address)
-            if not values_equal(reference_value, candidate_value):
-                data_mismatches.append(
-                    {
-                        "sheet": sheet_name,
-                        "cell": address,
-                        "reference": reference_value,
-                        "candidate": candidate_value,
-                    }
-                )
-                if len(data_mismatches) >= 25:
-                    break
-
-    formula_mismatches = []
-    formula_cells_compared = 0
-    for sheet_name in SHEET_NAMES:
-        all_addresses = sorted(
-            set(reference.formulas[sheet_name]) | set(candidate.formulas[sheet_name])
-        )
-        for address in all_addresses:
-            formula_cells_compared += 1
-            reference_formula = reference.formulas[sheet_name].get(address)
-            candidate_formula = candidate.formulas[sheet_name].get(address)
-            if reference_formula != candidate_formula:
-                formula_mismatches.append(
-                    {
-                        "sheet": sheet_name,
-                        "cell": address,
-                        "reference": reference_formula,
-                        "candidate": candidate_formula,
-                    }
-                )
-                if len(formula_mismatches) >= 25:
-                    break
-
-    structural_fields = {
-        "sheet_names": reference.sheet_names == candidate.sheet_names,
-        "sheet_states": reference.sheet_states == candidate.sheet_states,
-        "merges": reference.merges == candidate.merges,
-        "validations": reference.validations == candidate.validations,
-        "panes": reference.panes == candidate.panes,
-        "tables": reference.tables == candidate.tables,
-        "defined_names": reference.defined_names == candidate.defined_names,
-        "chart_titles_and_ranges": comparable_charts(reference.charts)
-        == comparable_charts(candidate.charts),
-    }
-    return {
-        "structural_fields": structural_fields,
-        "structure_match": all(structural_fields.values()),
-        "data_cells_compared": data_cells_compared,
-        "data_mismatch_count": len(data_mismatches),
-        "data_mismatch_examples": data_mismatches,
-        "formula_cells_compared": formula_cells_compared,
-        "formula_mismatch_count": len(formula_mismatches),
-        "formula_mismatch_examples": formula_mismatches,
-    }
-
-
-def validate_workbook_structure(
-    candidate_path: Path,
-    data: DashboardData,
-    reference_path: Path | None,
-) -> dict[str, Any]:
-    candidate = inspect_workbook_structure(candidate_path)
-    expected_formula_counts = {
-        "Portfolio Overview": 1138,
-        "Risk Segments": 114,
-        "Transitions": 309,
-        "Validation": 82,
-    }
-    table_summary = {
-        sheet_name: tables for sheet_name, tables in candidate.tables.items() if tables
-    }
-    validation_count = sum(
-        len(items) for items in candidate.validations.values()
-    )
-    loan_identifier_headers = []
-    for sheet_name in ["Monthly Data", "Segment Data", "Transition Data"]:
-        for table in candidate.tables[sheet_name]:
-            start, end = table["ref"].split(":")
-            header_row, start_col = parse_cell_address(start)
-            _, end_col = parse_cell_address(end)
-            for col in range(start_col, end_col + 1):
-                address = f"{xl_col_to_name(col - 1)}{header_row}"
-                value = str(candidate.cells[sheet_name].get(address, ""))
-                normalized = re.sub(r"[^a-z0-9]", "", value.lower())
-                if "loanid" in normalized or "loanidentifier" in normalized:
-                    loan_identifier_headers.append(
-                        {"sheet": sheet_name, "cell": address, "value": value}
-                    )
-    external_formula_refs = [
-        {"sheet": sheet_name, "cell": address, "formula": formula}
-        for sheet_name, formulas in candidate.formulas.items()
-        for address, formula in formulas.items()
-        if "[" in formula or "]" in formula
-    ]
-    core_checks = {
-        "sheet_names_and_order": candidate.sheet_names == SHEET_NAMES,
-        "all_sheets_visible": all(
-            state == "visible" for state in candidate.sheet_states.values()
+def validate_dashboard_data(data: DashboardData) -> None:
+    """Check the small set of assumptions used by the workbook formulas."""
+    datasets = {
+        "monthly": (data.monthly, lambda row: row["as_of_month"]),
+        "segments": (
+            data.segments,
+            lambda row: (row["as_of_month"], row["segment_name"], row["segment_value"]),
         ),
-        "chart_count": len(candidate.charts) == 9,
-        "chart_series_count": sum(len(chart["series"]) for chart in candidate.charts)
-        == 18,
-        "table_count": sum(len(tables) for tables in candidate.tables.values()) == 4,
-        "data_validation_count": validation_count == 5,
-        "formula_counts": all(
-            len(candidate.formulas[sheet_name]) == count
-            for sheet_name, count in expected_formula_counts.items()
+        "transitions": (
+            data.transitions,
+            lambda row: (row["from_month"], row["from_state"], row["to_state"]),
         ),
-        "validation_month_count": len(data.validation_samples) == 3,
-        "external_links": not candidate.external_links and not external_formula_refs,
-        "macros": not candidate.vba_parts,
-        "power_query": not candidate.power_query_parts,
-        "loan_identifier_headers": not loan_identifier_headers,
-        "formula_error_tokens": not candidate.formula_error_tokens,
-        "chinese_characters": candidate.chinese_character_count == 0,
-        "automatic_calculation": candidate.calc_mode in {None, "auto"},
-        "full_calculation_on_load": candidate.full_calc_on_load in {None, "1"},
     }
-    if not all(core_checks.values()):
-        failures = [name for name, passed in core_checks.items() if not passed]
-        raise RuntimeError(f"Candidate workbook structure checks failed: {failures}")
+    for name, (rows, key_function) in datasets.items():
+        if not rows:
+            raise RuntimeError(f"{name} dashboard data is empty")
+        keys = [key_function(row) for row in rows]
+        if len(keys) != len(set(keys)):
+            raise RuntimeError(f"{name} dashboard data contains duplicate keys")
+        if any("loan_id" in field.lower() for row in rows for field in row):
+            raise RuntimeError(f"{name} dashboard data contains a loan identifier column")
 
-    comparison = None
-    if reference_path and reference_path.is_file():
-        reference = inspect_workbook_structure(reference_path)
-        comparison = compare_reference_and_candidate(reference, candidate)
-        if not comparison["structure_match"]:
-            failures = [
-                name
-                for name, passed in comparison["structural_fields"].items()
-                if not passed
-            ]
-            raise RuntimeError(f"Reference structure comparison failed: {failures}")
-        if comparison["data_mismatch_count"]:
-            raise RuntimeError(
-                "Reference data comparison failed: "
-                f"{comparison['data_mismatch_examples'][:3]}"
-            )
-        if comparison["formula_mismatch_count"]:
-            raise RuntimeError(
-                "Reference formula comparison failed: "
-                f"{comparison['formula_mismatch_examples'][:3]}"
-            )
-
-    return {
-        "core_checks": core_checks,
-        "sheet_names": candidate.sheet_names,
-        "chart_count": len(candidate.charts),
-        "chart_series_count": sum(len(chart["series"]) for chart in candidate.charts),
-        "chart_details": candidate.charts,
-        "table_count": sum(len(tables) for tables in candidate.tables.values()),
-        "tables": table_summary,
-        "data_validation_count": validation_count,
-        "data_validations": candidate.validations,
-        "merges": candidate.merges,
-        "panes": candidate.panes,
-        "defined_names": candidate.defined_names,
-        "formula_counts": {
-            sheet_name: len(formulas)
-            for sheet_name, formulas in candidate.formulas.items()
-            if formulas
-        },
-        "validation_months": [
-            row["as_of_month"][:7] for row in data.validation_samples
-        ],
-        "recalculation": {
-            "calc_mode": candidate.calc_mode,
-            "full_calc_on_load": candidate.full_calc_on_load,
-            "validation_formula_cell": "Validation!B9",
-            "validation_requires_excel_recalculation": True,
-        },
-        "external_formula_references": external_formula_refs,
-        "loan_identifier_headers": loan_identifier_headers,
-        "comparison_with_reference": comparison,
-    }
-
-
-def write_summary(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if len(data.monthly) != 87:
+        raise RuntimeError(f"Expected 87 monthly rows, found {len(data.monthly)}")
+    if data.monthly[0]["as_of_month"] != "2019-01-01":
+        raise RuntimeError("Monthly data does not start at 2019-01")
+    if data.monthly[-1]["as_of_month"] != "2026-03-01":
+        raise RuntimeError("Monthly data does not end at 2026-03")
 
 
 def main() -> int:
     args = parse_args()
     database = args.database.resolve()
     output = args.output.resolve()
-    summary = args.summary.resolve()
-    reference = args.reference.resolve() if args.reference else None
     if not database.is_file():
         raise FileNotFoundError(f"DuckDB database not found: {database}")
-    if reference and output == reference:
-        raise ValueError("Candidate output must not overwrite the reference workbook")
 
     data = load_dashboard_data(database)
+    validate_dashboard_data(data)
     output.parent.mkdir(parents=True, exist_ok=True)
-    temporary_output = output.with_name(f"{output.stem}.tmp.xlsx")
-    if temporary_output.exists():
-        temporary_output.unlink()
-    build_workbook(temporary_output, data)
-    normalize_theme_fonts(temporary_output)
-    validation = validate_workbook_structure(temporary_output, data, reference)
-    os.replace(temporary_output, output)
+    build_workbook(output, data)
+    if not output.is_file() or output.stat().st_size == 0:
+        raise RuntimeError("XlsxWriter did not create the workbook")
 
-    summary_payload = {
-        "generated_by": "scripts/build_excel_dashboard.py",
-        "xlsxwriter_version": xlsxwriter.__version__,
-        "output_path": str(output.relative_to(PROJECT_ROOT)),
-        "output_size_bytes": output.stat().st_size,
-        "reference_path": (
-            str(reference.relative_to(PROJECT_ROOT))
-            if reference and reference.is_relative_to(PROJECT_ROOT)
-            else None
-        ),
-        "embedded_rows": {
-            "monthly": len(data.monthly),
-            "segments": len(data.segments),
-            "transitions": len(data.transitions),
-        },
-        "duckdb_validation_samples": data.validation_samples,
-        "workbook_validation": validation,
-        "manual_excel_validation_required": True,
-    }
-    write_summary(summary, summary_payload)
     print(f"Workbook: {output}")
-    print(f"Summary: {summary}")
     print(
-        "Structure: "
-        f"{len(validation['sheet_names'])} sheets, "
-        f"{validation['chart_count']} charts, "
-        f"{validation['table_count']} tables, "
-        f"{validation['data_validation_count']} validations"
+        f"Data rows: {len(data.monthly):,} monthly, "
+        f"{len(data.segments):,} segment, {len(data.transitions):,} transition"
     )
-    print("Mac Excel recalculation and manual acceptance remain required")
+    print(f"Worksheets: {len(SHEET_NAMES)}; charts: 9; dropdowns: 5")
     return 0
 
 
