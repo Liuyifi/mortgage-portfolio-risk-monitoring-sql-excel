@@ -1,6 +1,6 @@
 # Mortgage Portfolio Risk Monitoring with SQL and Excel
 
-This project uses Freddie Mac 2019 and 2020 sample mortgage data to build monthly portfolio-risk metrics in DuckDB and an Excel dashboard.
+This project turns Freddie Mac 2019 and 2020 sample mortgage data into a monthly portfolio-monitoring workflow built with DuckDB, SQL, Python and Excel.
 
 I track on-book balances, 30+/60+/90+ delinquency by loan count and unpaid principal balance (UPB), compare risk across FICO, CLTV, DTI and origination-vintage groups, and calculate month-to-month delinquency transitions. Python runs the SQL steps, exports aggregate data and creates the workbook with XlsxWriter.
 
@@ -16,6 +16,13 @@ I track on-book balances, 30+/60+/90+ delinquency by loan count and unpaid princ
 | Main tools | DuckDB, SQL, Python, Excel |
 
 The year labels refer to origination vintages, not the end of each loan's performance history. Both samples continue into later observation years. Core validation checks passed on the local build.
+
+## Analytical design
+
+- Separate month-end on-book exposure from the narrower population eligible for delinquency-rate calculation.
+- Compare delinquency by both loan count and unpaid principal balance rather than treating every exposure as economically equal.
+- Segment portfolio risk across FICO, CLTV, DTI and origination vintage using additive numerators and denominators.
+- Pair delinquency transitions only across exact consecutive calendar months, with terminal states and right-censoring handled explicitly.
 
 ## Questions I wanted to answer
 
@@ -79,7 +86,7 @@ three aggregate CSV exports
 Excel dashboard
 ```
 
-The SQL steps run in one DuckDB transaction so a failed validation does not leave a partial database. The schemas are `raw_external`, `staging`, `curated`, `mart` and `quality`; their names describe the role of each table without adding another framework.
+The SQL steps run in one DuckDB transaction so a failed validation does not leave a partial database. The schemas are `raw_external`, `staging`, `curated`, `mart` and `quality`.
 
 ## Excel dashboard
 
@@ -89,15 +96,17 @@ The workbook contains three user-facing pages:
 - **Risk Segments** for a selected month and segmentation dimension
 - **Transitions** for count and beginning-UPB migration matrices and a selected origin-state chart
 
-![Excel dashboard page structure](docs/assets/dashboard_views.png)
+For the public repository, the diagram below is a workbook-structure schematic rather than a data-bearing dashboard screenshot. Generated workbooks and derived outputs remain local.
+
+![Public workbook structure schematic](docs/assets/dashboard_views.png)
 
 The workbook also includes three aggregate data sheets and a short ReadMe sheet. It uses native Excel formulas, charts and dropdowns. No loan identifiers or loan-level rows are written to the workbook.
 
 ## Data checks
 
-I kept checks that would materially change the analysis if they failed: source row counts, duplicate keys, origination/performance coverage, valid dates and major status codes, on-book and eligible population logic, delinquency numerator hierarchy, segment reconciliation, three lower-level metric recalculations, adjacent-month transition pairs, and transition cohort/rate reconciliation.
+The checks cover source integrity and row counts, duplicate keys, date and status validity, consistency between on-book and delinquency-eligible populations, delinquency hierarchy, segment reconciliation, and independent spot recalculation of selected metrics.
 
-The raw-data script separately checks that all four files exist, have the expected field counts and row counts, and contain usable dates, numeric fields and status codes. The export script performs a smaller set of checks for output row counts, key uniqueness, aggregate reconciliation and the absence of loan identifier columns.
+Transition checks confirm exact adjacent-month pairing and reconcile cohort counts and rates. Export checks cover output row counts, key uniqueness and aggregate reconciliation, and prevent loan identifiers from entering the exported dashboard data.
 
 ## Repository structure
 
