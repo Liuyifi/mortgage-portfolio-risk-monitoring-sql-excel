@@ -75,7 +75,7 @@ Raw-file validation and dashboard-export checks run separately so the SQL layer 
 
 The input is the Freddie Mac Single-Family Loan-Level Dataset sample for the 2019 and 2020 origination vintages: two origination and two monthly performance files. The year labels are origination vintages; performance continues into later years. The analytical grain is `(loan_id, as_of_month)`.
 
-The repository does not publish raw Freddie Mac files, generated loan-level artifacts, aggregate exports, the workbook, or data-bearing screenshots. The public images are non-data-bearing diagrams and layouts. Users must obtain the samples from Freddie Mac and follow applicable terms. See [NOTICE.md](NOTICE.md).
+The repository does not publish raw Freddie Mac files, generated loan-level artifacts, aggregate exports, the workbook, or data-bearing screenshots. The public dashboard preview contains no source-derived analytical values; the workflow diagram shows only high-level project scope. Users must obtain the samples from Freddie Mac and follow applicable terms. See [NOTICE.md](NOTICE.md).
 
 ## Repository structure
 
