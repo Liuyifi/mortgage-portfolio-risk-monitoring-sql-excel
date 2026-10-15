@@ -161,7 +161,7 @@ SEGMENT_HEADERS = [
     "As of month",
     "Segment name",
     "Segment value",
-    "Privacy merged",
+    "Low-volume grouped",
     "Source mart rows",
     "On-book loans",
     "On-book UPB",
@@ -181,7 +181,7 @@ TRANSITION_HEADERS = [
     "To month",
     "From state",
     "To state",
-    "Privacy merged",
+    "Low-volume grouped",
     "Source mart rows",
     "Transition loans",
     "From-month UPB",
@@ -1258,7 +1258,7 @@ def write_transitions(
     )
     worksheet.merge_range(
         "A9:Q10",
-        "Privacy note: low-volume destinations are combined as OTHER_OR_LOW_VOLUME. Entire from-month × from-state cohorts below 20 loans are suppressed, so a blank cell is not automatically zero.",
+        "Low-volume display note: destinations are combined as OTHER_OR_LOW_VOLUME. Entire from-month × from-state cohorts below 20 loans are suppressed, so a blank cell is not automatically zero.",
         formats["note_box"],
     )
 

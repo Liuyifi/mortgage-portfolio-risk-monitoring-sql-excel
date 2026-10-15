@@ -1,112 +1,81 @@
 # Mortgage Portfolio Risk Monitoring with SQL and Excel
 
-This project turns Freddie Mac 2019 and 2020 sample mortgage data into a monthly portfolio-monitoring workflow built with DuckDB, SQL, Python and Excel.
+This project uses Freddie Mac 2019 and 2020 sample vintages to build a monthly mortgage portfolio-monitoring workflow with DuckDB, SQL, Python and Excel.
 
-I track on-book balances, 30+/60+/90+ delinquency by loan count and unpaid principal balance (UPB), compare risk across FICO, CLTV, DTI and origination-vintage groups, and calculate month-to-month delinquency transitions. Python runs the SQL steps, exports aggregate data and creates the workbook with XlsxWriter.
+I separate on-book exposure from delinquency-eligible balances, track 30+/60+/90+ delinquency by both loan count and unpaid principal balance (UPB), compare risk across FICO, CLTV, DTI and origination-vintage groups, and measure exact month-to-month delinquency transitions.
 
-## Project at a glance
+## Project highlights
 
-| Item | Local build |
+| Item | Scope |
 |---|---:|
 | Sampled originations | 100,000 |
-| Monthly performance records | 4,452,471 |
-| Origination vintages | 2019 and 2020 |
-| Performance history | 2019-01 through 2026-03 |
-| Analytical loan-month key | `(loan_id, as_of_month)` |
-| Main tools | DuckDB, SQL, Python, Excel |
-
-The year labels refer to origination vintages, not the end of each loan's performance history. Both samples continue into later observation years. Core validation checks passed on the local build.
-
-## Analytical design
-
-- Separate month-end on-book exposure from the narrower population eligible for delinquency-rate calculation.
-- Compare delinquency by both loan count and unpaid principal balance rather than treating every exposure as economically equal.
-- Segment portfolio risk across FICO, CLTV, DTI and origination vintage using additive numerators and denominators.
-- Pair delinquency transitions only across exact consecutive calendar months, with terminal states and right-censoring handled explicitly.
-
-## Questions I wanted to answer
-
-- How many loans and how much UPB remain on book each month?
-- How different are delinquency rates when I weight every loan equally versus weighting by balance?
-- Which FICO, CLTV, DTI and vintage groups show higher delinquency?
-- How do observable loans move between current, delinquent and terminal states from one month to the next?
-
-## Dataset and scope
-
-The input is the Freddie Mac Single-Family Loan-Level Dataset Standard Dataset sample for the 2019 and 2020 origination vintages. I use the origination files for borrower and loan attributes and the monthly performance files for balances, delinquency status, loan age and terminal events.
-
-The project does not include raw Freddie Mac data or generated loan-level artifacts. Users need to obtain the four sample files directly from Freddie Mac and follow the terms that apply to their access. See [NOTICE.md](NOTICE.md) for the repository's data-publication boundary.
-
-## Portfolio and delinquency definitions
-
-A monthly record is **on book** when Current Actual UPB is positive and Zero Balance Code is blank. A zero-balance terminal record remains available for transition analysis but is not included in month-end exposure.
-
-The **delinquency-eligible** population is narrower. It includes on-book records with Loan Age of at least 1 and a numeric Current Loan Delinquency Status from `00` through `99`. Loan Age 0, `RA`, `XX`, missing or invalid statuses and terminal rows do not enter the delinquency denominator. The dashboard shows eligible coverage against the broader on-book population so this difference is visible.
-
-The delinquency thresholds are:
-
-- 30+: numeric status of `01` or higher
-- 60+: numeric status of `02` or higher
-- 90+: numeric status of `03` or higher
-
-For each threshold, I calculate both a count rate and a UPB-weighted rate. Count rates divide delinquent loans by eligible loans. UPB-weighted rates divide delinquent UPB by eligible UPB. These measures can differ when larger-balance loans perform differently from smaller-balance loans.
-
-The 90+ bucket measures severe delinquency. I do not label every 90+ loan as default because a default definition would need a separate event rule, such as a selected zero-balance, disposition or REO outcome.
-
-## Risk segmentation
-
-The monthly segment table contains four independent views:
-
-- origination vintage: 2019 and 2020
-- Classic FICO: `<620`, `620-659`, `660-699`, `700-739`, `740-779`, `780+`, `Unknown`
-- Original CLTV: `<=60`, `61-70`, `71-80`, `81-90`, `91-95`, `>95`, `Unknown`
-- Original DTI: `<=20`, `21-30`, `31-40`, `41-45`, `46-50`, `>50`, `Unknown`
-
-Each row keeps additive exposure, denominator and delinquency numerator fields. Excel recalculates the displayed rates from those components rather than averaging stored percentages. Missing values and documented Freddie Mac sentinels remain in `Unknown`; they are not moved into the highest-risk band.
-
-## Monthly transitions
-
-The transition analysis joins a loan's current observation only to the same loan exactly one calendar month later. It does not treat the next available record after a gap as a monthly transition.
-
-The beginning observation must be on book. The destination can be current, 30, 60, 90+, REO, unknown or a terminal state. The count rate uses observable loans in the same beginning-month and from-state cohort. The balance rate uses their beginning-month UPB. A final record without the next calendar month is right-censored and excluded from the transition denominator.
+| Monthly performance rows | 4,452,471 |
+| Observation window | 87 months · 2019-01 to 2026-03 |
+| Risk segmentation | FICO · CLTV · DTI · origination vintage |
+| Core SQL validation | 19 / 19 checks passed in the verified local build |
+| Excel reporting layer | 7 worksheets · 9 charts · 5 dropdown controls |
+| Main tools | DuckDB · SQL · Python · Excel |
 
 ## Workflow
 
 ![Mortgage portfolio risk monitoring workflow](docs/assets/project_workflow.png)
 
-```text
-four raw sample files
-        ↓
-DuckDB staging and loan-month tables
-        ↓
-monthly portfolio, segment and transition metrics
-        ↓
-three aggregate CSV exports
-        ↓
-Excel dashboard
-```
+The four sample files are parsed into typed staging tables and a loan-month fact table. SQL builds portfolio, segment and transition marts; Python exports three aggregate CSVs and creates the workbook.
 
-The SQL steps run in one DuckDB transaction so a failed validation does not leave a partial database. The schemas are `raw_external`, `staging`, `curated`, `mart` and `quality`.
+## Excel dashboard and public preview
 
-## Excel dashboard
+The workbook has three dashboard pages:
 
-The workbook contains three user-facing pages:
+- **Portfolio Overview:** exposure, eligibility coverage and count- and UPB-based delinquency trends.
+- **Risk Segments:** exposure and delinquency by selected month and dimension.
+- **Delinquency Transitions:** count and beginning-UPB migration matrices plus an origin-state chart.
 
-- **Portfolio Overview** for monthly exposure, eligibility coverage and count- and UPB-based delinquency trends
-- **Risk Segments** for a selected month and segmentation dimension
-- **Transitions** for count and beginning-UPB migration matrices and a selected origin-state chart
+Three aggregate data sheets and a ReadMe sheet support the dashboards. Native Excel formulas, nine charts and five dropdown controls are used; no loan identifiers or loan-level rows are written.
 
-For the public repository, the diagram below is a workbook-structure schematic rather than a data-bearing dashboard screenshot. Generated workbooks and derived outputs remain local.
+The preview illustrates the workbook layout without publishing source-derived values or a data-bearing screenshot.
 
-![Public workbook structure schematic](docs/assets/dashboard_views.png)
+![Illustrative non-data-bearing workbook layout preview](docs/assets/dashboard_views.png)
 
-The workbook also includes three aggregate data sheets and a short ReadMe sheet. It uses native Excel formulas, charts and dropdowns. No loan identifiers or loan-level rows are written to the workbook.
+## Analysis scope
 
-## Data checks
+- Monthly on-book loan count and sample UPB exposure.
+- 30+/60+/90+ delinquency by both loan count and eligible UPB.
+- Independent views by Classic FICO, Original CLTV, Original DTI and origination vintage.
+- Exact next-calendar-month transitions between current, delinquent, terminal and other states.
 
-The checks cover source integrity and row counts, duplicate keys, date and status validity, consistency between on-book and delinquency-eligible populations, delinquency hierarchy, segment reconciliation, and independent spot recalculation of selected metrics.
+Segment views are produced independently for origination vintage, Classic FICO, Original CLTV and Original DTI. Missing and sentinel values remain `Unknown` rather than entering the highest-risk band. Details are in [docs/project_notes.md](docs/project_notes.md).
 
-Transition checks confirm exact adjacent-month pairing and reconcile cohort counts and rates. Export checks cover output row counts, key uniqueness and aggregate reconciliation, and prevent loan identifiers from entering the exported dashboard data.
+## Portfolio and delinquency definitions
+
+A record is **on book** when Current Actual UPB is positive and Zero Balance Code is blank. Zero-balance terminal records remain available for transitions but are excluded from month-end exposure.
+
+The **delinquency-eligible** population is narrower: on book, Loan Age at least 1, and a numeric Current Loan Delinquency Status from `00` through `99`. Loan Age 0, `RA`, `XX`, missing or invalid statuses, and terminal rows do not enter this denominator. The dashboard shows eligible coverage against the broader on-book population.
+
+| Threshold | Definition |
+|---|---|
+| 30+ | numeric status `>= 01` |
+| 60+ | numeric status `>= 02` |
+| 90+ | numeric status `>= 03` |
+
+Count rates divide delinquent loans by eligible loans; UPB-weighted rates divide delinquent UPB by eligible UPB. They can differ when loan size and performance are related. **90+ is treated as severe delinquency, not automatically as default.** Default would require a separate event rule, such as selected zero-balance, disposition or REO outcomes.
+
+## Monthly transitions
+
+A transition pairs the same loan only across exact consecutive calendar months. The next available record after a gap is not a monthly transition. The origin must be on book; the destination may be current, 30, 60, 90+, REO, unknown or terminal.
+
+The count-rate denominator is observable loans in the origin-month and origin-state cohort; the balance-rate denominator is their origin-month UPB. A final observation without the next calendar month is right-censored and excluded. Exact pairing and low-volume rules are in [docs/project_notes.md](docs/project_notes.md).
+
+## Validation
+
+The final SQL build contains 19 core analytical checks covering source counts, key uniqueness and coverage, date/status validity, population logic, delinquency hierarchy, segment reconciliation, independent monthly recalculation, and transition timing/cohort reconciliation. All 19 passed in the verified local build.
+
+Raw-file validation and dashboard-export checks run separately so the SQL layer remains focused on the analytical results. The SQL checks are defined in [sql/90_validation_checks.sql](sql/90_validation_checks.sql).
+
+## Dataset and publication boundary
+
+The input is the Freddie Mac Single-Family Loan-Level Dataset sample for the 2019 and 2020 origination vintages: two origination and two monthly performance files. The year labels are origination vintages; performance continues into later years. The analytical grain is `(loan_id, as_of_month)`.
+
+The repository does not publish raw Freddie Mac files, generated loan-level artifacts, aggregate exports, the workbook, or data-bearing screenshots. The public images are non-data-bearing diagrams and layouts. Users must obtain the samples from Freddie Mac and follow applicable terms. See [NOTICE.md](NOTICE.md).
 
 ## Repository structure
 
@@ -116,7 +85,10 @@ Transition checks confirm exact adjacent-month pairing and reconcile cohort coun
 ├── NOTICE.md
 ├── requirements.txt
 ├── docs/
-│   └── project_notes.md
+│   ├── project_notes.md
+│   └── assets/
+│       ├── project_workflow.png
+│       └── dashboard_views.png
 ├── scripts/
 │   ├── validate_raw_data.py
 │   ├── build_data_layer.py
@@ -131,7 +103,7 @@ Transition checks confirm exact adjacent-month pairing and reconcile cohort coun
     └── 90_validation_checks.sql
 ```
 
-The main metric definitions are in `sql/20_curated.sql` and `sql/30_marts.sql`. Transition pairing is defined in `sql/20_curated.sql`. Additional implementation notes are in [docs/project_notes.md](docs/project_notes.md).
+Metric definitions and transition pairing are in `sql/20_curated.sql` and `sql/30_marts.sql`; supporting details are in [docs/project_notes.md](docs/project_notes.md).
 
 ## How to run
 
@@ -154,10 +126,14 @@ python3 -m venv .venv
 .venv/bin/python scripts/build_excel_dashboard.py
 ```
 
-The final command refreshes the aggregate CSV files before creating `outputs/mortgage_portfolio_risk_monitoring_sql_excel_dashboard.xlsx`.
+The final command refreshes the three aggregate dashboard CSVs before creating `outputs/mortgage_portfolio_risk_monitoring_sql_excel_dashboard.xlsx`.
 
 ## Limitations
 
-This is a descriptive portfolio-monitoring project, not a predictive credit model. It uses two annual samples rather than Freddie Mac's full loan population or a live lender portfolio. Trends reflect different entry timing, seasoning, payoff and other exits, right-censoring, and changes in the loans remaining in the sample. The Excel dashboard is based on local aggregate outputs and does not refresh from an external connection.
+This is descriptive portfolio monitoring, not predictive credit modeling or expected-loss estimation. It uses two annual samples, not the full Freddie Mac population or live lender data. Trends reflect entry timing, seasoning, payoff and other exits, right-censoring, and changing remaining sample composition. The workbook requires a local rebuild to refresh.
 
-Official references: [Freddie Mac Single-Family Loan-Level Dataset](https://www.freddiemac.com/research/datasets/sf-loanlevel-dataset), [Release 47 General User Guide](https://www.freddiemac.com/fmac-resources/research/pdf/general_user_guide_july_2026.pdf), and [Release 47 File Layout](https://www.freddiemac.com/fmac-resources/research/pdf/file_layout_july_2026.xlsx).
+## Official references
+
+- [Freddie Mac Single-Family Loan-Level Dataset](https://www.freddiemac.com/research/datasets/sf-loanlevel-dataset)
+- [Release 47 General User Guide](https://www.freddiemac.com/fmac-resources/research/pdf/general_user_guide_july_2026.pdf)
+- [Release 47 File Layout](https://www.freddiemac.com/fmac-resources/research/pdf/file_layout_july_2026.xlsx)

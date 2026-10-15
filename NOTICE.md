@@ -2,7 +2,7 @@
 
 This repository contains only independently written code and methodology documentation for a portfolio project based on the Freddie Mac Single-Family Loan-Level Dataset (SFLLD).
 
-It does **not** include or license any Freddie Mac source data, loan-level records, loan identifiers, rebuilt databases, aggregate data exports, detailed validation results, screenshots, or generated Excel workbooks. Users must obtain any required data directly from Freddie Mac and comply with the terms that apply to their own access and use.
+It does **not** include or license any Freddie Mac source data, loan-level records, loan identifiers, rebuilt databases, aggregate data exports, detailed data-bearing validation outputs, generated Excel workbooks, or data-bearing dashboard screenshots. Public diagrams and layout illustrations contain no source-derived values. Users must obtain any required data directly from Freddie Mac and comply with the terms that apply to their own access and use.
 
 Official references:
 

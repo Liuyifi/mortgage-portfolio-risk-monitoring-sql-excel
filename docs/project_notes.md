@@ -63,12 +63,12 @@ Low-volume transition destinations are combined for the dashboard, and beginning
 
 The raw-data script checks that the four expected files exist, have the expected number of fields and rows, and contain usable key dates, numeric fields, delinquency statuses and zero-balance codes. It also checks duplicate origination IDs, loan coverage between the origination and performance files, important-field missingness, and the minimum and maximum performance months.
 
-The SQL build checks duplicate keys, loan coverage, observation months, risk-field sentinels, major status codes, the on-book and eligible rules, count and UPB numerator hierarchy, segment completeness and reconciliation, and transition timing and cohort totals. Three selected months are recalculated directly from staging fields and compared with the monthly mart.
+The SQL layer implements 19 core analytical validation checks. They cover duplicate keys, loan coverage, observation months, risk-field sentinels, major status codes, the on-book and eligible rules, count and UPB numerator hierarchy, segment completeness and reconciliation, and transition timing and cohort totals. Three selected months are recalculated directly from staging fields and compared with the monthly mart.
 
 The export step is intentionally smaller. It checks nonempty row counts, output key uniqueness, segment totals, retained transition cohort totals and the absence of loan identifier columns. It does not repeat the full SQL validation.
 
 ## 7. What I learned and limitations
 
-The main modeling decision was not the SQL syntax; it was choosing denominators that match the question. On-book exposure, delinquency eligibility and observable transition cohorts are related populations but should not be treated as interchangeable. Keeping both count and UPB views also prevents one weighting method from hiding the other.
+The main analytical design decision was not the SQL syntax; it was choosing denominators that match the question. On-book exposure, delinquency eligibility and observable transition cohorts are related populations but should not be treated as interchangeable. Keeping both count and UPB views also prevents one weighting method from hiding the other.
 
 This project is descriptive. It does not predict default, estimate lifetime loss or assign credit decisions. The two annual samples are not the full Freddie Mac population or a live lender portfolio. Comparisons across time and vintage reflect entry timing, seasoning, payoff and other exits, right-censoring, and changes in the loans remaining in the sample. The Excel workbook uses local aggregate exports, so it must be rebuilt to reflect a new database run.
